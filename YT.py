@@ -2,20 +2,18 @@
 import os
 import sys
 import queue
+import shutil
 import threading
-import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 try:
     import yt_dlp
 except ImportError:
-    raise SystemExit(
-        "yt-dlp is missing. Run: py -m pip install -U yt-dlp"
-    )
+    yt_dlp = None
 
 
-# ---------------- Configuration ----------------
+# ---------------- APP SETTINGS ----------------
 
 APP_TITLE = "YouTube Downloader"
 BG = "#10141F"
@@ -24,9 +22,50 @@ INPUT_BG = "#242C3D"
 TEXT = "#F3F5FA"
 MUTED = "#A8B2C5"
 ACCENT = "#6C63FF"
-SUCCESS = "#42D392"
-ERROR = "#FF7272"
 
+
+# ---------------- FIND FFMPEG ----------------
+
+def find_ffmpeg():
+    """Find ffmpeg.exe on PATH or in common Windows install folders."""
+
+    path = shutil.which("ffmpeg")
+    if path:
+        return os.path.dirname(path)
+
+    local = os.environ.get("LOCALAPPDATA", "")
+    program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+
+    search_roots = [
+        os.path.join(local, "Microsoft", "WinGet", "Links"),
+        os.path.join(local, "Microsoft", "WinGet", "Packages"),
+        os.path.join(program_data, "chocolatey", "bin"),
+        r"C:\ffmpeg\bin",
+        r"C:\Program Files\ffmpeg\bin",
+    ]
+
+    for base in search_roots:
+        if not os.path.isdir(base):
+            continue
+
+        direct = os.path.join(base, "ffmpeg.exe")
+        if os.path.isfile(direct):
+            return base
+
+        # WinGet packages may contain ffmpeg.exe in a nested bin folder.
+        if base.endswith("Packages"):
+            for current, dirs, files in os.walk(base):
+                dirs[:] = [
+                    d for d in dirs
+                    if d.lower() not in {"doc", "presets", "licenses"}
+                ]
+                if "ffmpeg.exe" in files:
+                    return current
+
+    return None
+
+
+# ---------------- MAIN APPLICATION ----------------
 
 class YouTubeDownloader:
     def __init__(self, root):
@@ -38,25 +77,26 @@ class YouTubeDownloader:
 
         self.events = queue.Queue()
         self.downloading = False
-        self.download_folder = os.path.join(
-            os.path.expanduser("~"), "Downloads"
-        )
 
         self.url_var = tk.StringVar()
         self.mode_var = tk.StringVar(value="Video (MP4)")
         self.quality_var = tk.StringVar(value="1080p")
         self.playlist_var = tk.BooleanVar(value=False)
-        self.folder_var = tk.StringVar(value=self.download_folder)
+        self.folder_var = tk.StringVar(
+            value=os.path.join(os.path.expanduser("~"), "Downloads")
+        )
         self.progress_var = tk.DoubleVar(value=0)
         self.status_var = tk.StringVar(value="Ready to download")
-        self.detail_var = tk.StringVar(value="Paste a video or playlist URL.")
+        self.detail_var = tk.StringVar(
+            value="Paste a video or playlist URL."
+        )
 
         self.setup_styles()
         self.build_ui()
-
+        self.on_mode_change()
         self.root.after(100, self.process_events)
 
-    # ---------------- UI ----------------
+    # ---------------- STYLING ----------------
 
     def setup_styles(self):
         style = ttk.Style()
@@ -70,13 +110,11 @@ class YouTubeDownloader:
             arrowcolor=TEXT,
             padding=7,
         )
-
         style.map(
             "TCombobox",
             fieldbackground=[("readonly", INPUT_BG)],
             foreground=[("readonly", TEXT)],
         )
-
         style.configure(
             "Download.Horizontal.TProgressbar",
             troughcolor=INPUT_BG,
@@ -85,6 +123,34 @@ class YouTubeDownloader:
             lightcolor=ACCENT,
             darkcolor=ACCENT,
         )
+
+    def label(self, parent, text):
+        tk.Label(
+            parent,
+            text=text,
+            bg=PANEL,
+            fg=TEXT,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w")
+
+    def button(self, parent, text, command, small=False):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=ACCENT,
+            fg="white",
+            activebackground="#5750D8",
+            activeforeground="white",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            padx=15 if small else 12,
+            pady=8,
+        )
+
+    # ---------------- INTERFACE ----------------
 
     def build_ui(self):
         header = tk.Frame(self.root, bg=BG)
@@ -112,12 +178,12 @@ class YouTubeDownloader:
         content = tk.Frame(panel, bg=PANEL)
         content.pack(fill="both", expand=True, padx=24, pady=22)
 
-        self.add_label(content, "YouTube video or playlist URL")
+        self.label(content, "YouTube video or playlist URL")
 
         url_row = tk.Frame(content, bg=PANEL)
         url_row.pack(fill="x", pady=(7, 18))
 
-        self.url_entry = tk.Entry(
+        tk.Entry(
             url_row,
             textvariable=self.url_var,
             font=("Segoe UI", 11),
@@ -126,12 +192,9 @@ class YouTubeDownloader:
             insertbackground=TEXT,
             relief="flat",
             bd=0,
-        )
-        self.url_entry.pack(
-            side="left", fill="x", expand=True, ipady=12, padx=(0, 8)
-        )
+        ).pack(side="left", fill="x", expand=True, ipady=12, padx=(0, 8))
 
-        self.make_button(
+        self.button(
             url_row, "Paste", self.paste_url, small=True
         ).pack(side="right")
 
@@ -144,7 +207,8 @@ class YouTubeDownloader:
         right = tk.Frame(options, bg=PANEL)
         right.pack(side="left", fill="x", expand=True)
 
-        self.add_label(left, "Download format")
+        self.label(left, "Download format")
+
         self.mode_combo = ttk.Combobox(
             left,
             textvariable=self.mode_var,
@@ -152,13 +216,22 @@ class YouTubeDownloader:
             state="readonly",
         )
         self.mode_combo.pack(fill="x", pady=(7, 0))
-        self.mode_combo.bind("<<ComboboxSelected>>", self.on_mode_change)
+        self.mode_combo.bind(
+            "<<ComboboxSelected>>", self.on_mode_change
+        )
 
-        self.add_label(right, "Video quality")
+        self.label(right, "Video quality")
+
         self.quality_combo = ttk.Combobox(
             right,
             textvariable=self.quality_var,
-            values=["Best available", "1080p", "720p", "480p", "360p"],
+            values=[
+                "Best available",
+                "1080p",
+                "720p",
+                "480p",
+                "360p",
+            ],
             state="readonly",
         )
         self.quality_combo.pack(fill="x", pady=(7, 0))
@@ -176,12 +249,12 @@ class YouTubeDownloader:
             cursor="hand2",
         ).pack(anchor="w", pady=(0, 17))
 
-        self.add_label(content, "Save location")
+        self.label(content, "Save location")
 
         folder_row = tk.Frame(content, bg=PANEL)
         folder_row.pack(fill="x", pady=(7, 18))
 
-        self.folder_entry = tk.Entry(
+        tk.Entry(
             folder_row,
             textvariable=self.folder_var,
             font=("Segoe UI", 10),
@@ -192,16 +265,13 @@ class YouTubeDownloader:
             bd=0,
             state="readonly",
             readonlybackground=INPUT_BG,
-        )
-        self.folder_entry.pack(
-            side="left", fill="x", expand=True, ipady=10, padx=(0, 8)
-        )
+        ).pack(side="left", fill="x", expand=True, ipady=10, padx=(0, 8))
 
-        self.make_button(
+        self.button(
             folder_row, "Browse", self.choose_folder, small=True
         ).pack(side="right")
 
-        self.download_button = self.make_button(
+        self.download_button = self.button(
             content, "↓   Start Download", self.start_download
         )
         self.download_button.pack(fill="x", ipady=5, pady=(0, 20))
@@ -214,13 +284,12 @@ class YouTubeDownloader:
             font=("Segoe UI", 10, "bold"),
         ).pack(anchor="w")
 
-        self.progress = ttk.Progressbar(
+        ttk.Progressbar(
             content,
             variable=self.progress_var,
             maximum=100,
             style="Download.Horizontal.TProgressbar",
-        )
-        self.progress.pack(fill="x", pady=(9, 7))
+        ).pack(fill="x", pady=(9, 7))
 
         tk.Label(
             content,
@@ -232,47 +301,19 @@ class YouTubeDownloader:
             justify="left",
         ).pack(anchor="w")
 
-        footer = tk.Label(
+        tk.Label(
             self.root,
             text="Use only for content you own or are authorized to download.",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9),
-        )
-        footer.pack(pady=(0, 13))
+        ).pack(pady=(0, 13))
 
-    def add_label(self, parent, text):
-        tk.Label(
-            parent,
-            text=text,
-            bg=PANEL,
-            fg=TEXT,
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w")
-
-    def make_button(self, parent, text, command, small=False):
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=ACCENT,
-            fg="white",
-            activebackground="#5750D8",
-            activeforeground="white",
-            font=("Segoe UI", 10, "bold"),
-            relief="flat",
-            bd=0,
-            cursor="hand2",
-            padx=15 if small else 12,
-            pady=8,
-        )
-
-    # ---------------- Actions ----------------
+    # ---------------- USER ACTIONS ----------------
 
     def paste_url(self):
         try:
-            clipboard = self.root.clipboard_get()
-            self.url_var.set(clipboard.strip())
+            self.url_var.set(self.root.clipboard_get().strip())
         except tk.TclError:
             self.status_var.set("Clipboard is empty.")
 
@@ -282,7 +323,6 @@ class YouTubeDownloader:
         )
         if folder:
             self.folder_var.set(folder)
-            self.download_folder = folder
 
     def on_mode_change(self, _event=None):
         if self.mode_var.get() == "Audio (MP3)":
@@ -291,29 +331,57 @@ class YouTubeDownloader:
             self.quality_combo.configure(state="readonly")
 
     def start_download(self):
+        if yt_dlp is None:
+            messagebox.showerror(
+                "yt-dlp missing",
+                "Run this command in your terminal:\n\n"
+                "py -m pip install --upgrade yt-dlp",
+            )
+            return
+
         url = self.url_var.get().strip()
         folder = self.folder_var.get().strip()
 
-        if not url:
-            messagebox.showwarning(
-                "Missing URL", "Please paste a YouTube URL first."
-            )
-            return
-
         if not url.startswith(("https://", "http://")):
             messagebox.showwarning(
-                "Invalid URL", "Please enter a valid HTTP or HTTPS URL."
+                "Invalid URL",
+                "Please paste a valid YouTube video or playlist URL.",
             )
             return
 
-        if not folder or not os.path.isdir(folder):
+        if not os.path.isdir(folder):
             messagebox.showwarning(
-                "Invalid folder", "Please select an existing save folder."
+                "Invalid folder",
+                "Please choose an existing download folder.",
             )
             return
 
         if self.downloading:
             return
+
+        # Detect FFmpeg before starting the background worker.
+        ffmpeg_dir = find_ffmpeg()
+
+        # Both video merging and MP3 extraction can require FFmpeg.
+        if not ffmpeg_dir:
+            messagebox.showerror(
+                "FFmpeg not detected",
+                "Python cannot find ffmpeg.exe.\n\n"
+                "First, close and reopen PowerShell or VS Code.\n"
+                "Then test with:\n\n"
+                "ffmpeg -version\n\n"
+                "If that still fails, check your Windows PATH.",
+            )
+            return
+
+        settings = {
+            "url": url,
+            "folder": folder,
+            "mode": self.mode_var.get(),
+            "quality": self.quality_var.get(),
+            "playlist": self.playlist_var.get(),
+            "ffmpeg_dir": ffmpeg_dir,
+        }
 
         self.downloading = True
         self.download_button.configure(
@@ -323,36 +391,29 @@ class YouTubeDownloader:
         self.status_var.set("Preparing download...")
         self.detail_var.set("Connecting to YouTube...")
 
-        settings = {
-            "url": url,
-            "folder": folder,
-            "mode": self.mode_var.get(),
-            "quality": self.quality_var.get(),
-            "playlist": self.playlist_var.get(),
-        }
-
         threading.Thread(
             target=self.download_worker,
             args=(settings,),
             daemon=True,
         ).start()
 
-    # ---------------- Download engine ----------------
+    # ---------------- DOWNLOAD ENGINE ----------------
 
     def download_worker(self, settings):
-        folder = settings["folder"]
         is_audio = settings["mode"] == "Audio (MP3)"
-        allow_playlist = settings["playlist"]
+        folder = settings["folder"]
 
         options = {
-            "outtmpl": os.path.join(folder, "%(title)s.%(ext)s"),
-            "noplaylist": not allow_playlist,
-            "ignoreerrors": False,
+            "outtmpl": os.path.join(
+                folder, "%(title)s.%(ext)s"
+            ),
+            "noplaylist": not settings["playlist"],
             "retries": 3,
             "continuedl": True,
             "progress_hooks": [self.progress_hook],
             "quiet": True,
             "no_warnings": True,
+            "ffmpeg_location": settings["ffmpeg_dir"],
         }
 
         if is_audio:
@@ -384,11 +445,13 @@ class YouTubeDownloader:
 
             self.events.put((
                 "done",
-                "Download finished. Check your selected folder."
+                "Download finished. Check your selected folder.",
             ))
 
         except Exception as exc:
             self.events.put(("error", str(exc)))
+
+    # ---------------- PROGRESS ----------------
 
     def progress_hook(self, data):
         state = data.get("status")
@@ -400,12 +463,13 @@ class YouTubeDownloader:
                 or 0
             )
             downloaded = data.get("downloaded_bytes", 0)
-
             percent = downloaded * 100 / total if total else 0
+
             speed = data.get("_speed_str", "calculating speed")
             eta = data.get("_eta_str", "calculating time")
-            filename = os.path.basename(data.get("filename", ""))
-            filename = filename[:65]
+            filename = os.path.basename(
+                data.get("filename", "")
+            )[:65]
 
             self.events.put((
                 "progress",
@@ -417,10 +481,10 @@ class YouTubeDownloader:
             self.events.put((
                 "progress",
                 100,
-                "Download received; processing or merging files...",
+                "Processing or merging media files...",
             ))
 
-    # ---------------- Thread-safe UI updates ----------------
+    # ---------------- SAFE UI UPDATES ----------------
 
     def process_events(self):
         try:
@@ -440,25 +504,28 @@ class YouTubeDownloader:
                 elif kind == "done":
                     self.downloading = False
                     self.download_button.configure(
-                        state="normal", text="↓   Start Download"
+                        state="normal",
+                        text="↓   Start Download",
                     )
                     self.progress_var.set(100)
-                    self.status_var.set("✓  Completed successfully")
+                    self.status_var.set("Completed successfully")
                     self.detail_var.set(event[1])
                     messagebox.showinfo("Success", event[1])
 
                 elif kind == "error":
                     self.downloading = False
                     self.download_button.configure(
-                        state="normal", text="↓   Start Download"
+                        state="normal",
+                        text="↓   Start Download",
                     )
                     self.status_var.set("Download failed")
                     self.detail_var.set(event[1][:350])
+
                     messagebox.showerror(
                         "Download error",
                         event[1][:1500]
-                        + "\n\nCheck the URL, your connection, "
-                        "yt-dlp, and FFmpeg installation."
+                        + "\n\nCheck your URL, internet connection, "
+                        "yt-dlp and FFmpeg installation.",
                     )
 
         except queue.Empty:
@@ -467,7 +534,20 @@ class YouTubeDownloader:
         self.root.after(100, self.process_events)
 
 
+# ---------------- START APPLICATION ----------------
+
 if __name__ == "__main__":
+    if yt_dlp is None:
+        startup_root = tk.Tk()
+        startup_root.withdraw()
+        messagebox.showerror(
+            "Missing dependency",
+            "Install yt-dlp using:\n\n"
+            "py -m pip install --upgrade yt-dlp",
+        )
+        startup_root.destroy()
+        sys.exit(1)
+
     root = tk.Tk()
     app = YouTubeDownloader(root)
     root.mainloop()
