@@ -534,7 +534,7 @@ class YouTubeDownloader:
         self.root.after(100, self.process_events)
 
 
-# ---------------- START APPLICATION ----------------
+# ----- START APPLICATION -------
 
 if __name__ == "__main__":
     if yt_dlp is None:
