@@ -12,9 +12,6 @@ try:
 except ImportError:
     yt_dlp = None
 
-
-# ---------------- APP SETTINGS ----------------
-
 APP_TITLE = "YouTube Downloader"
 BG = "#10141F"
 PANEL = "#191F2E"
@@ -22,8 +19,6 @@ INPUT_BG = "#242C3D"
 TEXT = "#F3F5FA"
 MUTED = "#A8B2C5"
 ACCENT = "#6C63FF"
-
-
 # ---------------- FIND FFMPEG ----------------
 
 def find_ffmpeg():
